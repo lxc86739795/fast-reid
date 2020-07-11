@@ -1,0 +1,53 @@
+_BASE_: "../../../configs/Base-Strongerbaseline.yml"
+
+SOLVER:
+  IMS_PER_BATCH: 16
+
+MODEL_TEACHER:
+  META_ARCHITECTURE: "Baseline"
+
+  BACKBONE:
+    NAME: "build_resnet_backbone"
+    DEPTH: 50
+    LAST_STRIDE: 1
+    WITH_IBN: True
+    WITH_NL: True
+
+  HEADS:
+    NAME: "BNneckHead"
+    NECK_FEAT: "after"
+    IN_FEAT: 2048
+    CLS_LAYER: "circle"
+    POOL_LAYER: "gempool"
+
+MODEL:
+  META_ARCHITECTURE: "Baseline"
+
+  BACKBONE:
+    NAME: "build_resnet_backbone"
+    DEPTH: 50
+    NORM: "syncBN"
+    LAST_STRIDE: 1
+    WITH_NL: False
+    WITH_IBN: False
+    PRETRAIN: True
+
+  HEADS:
+    NAME: "BNneckHead"
+    NORM: "syncBN"
+    IN_FEAT: 2048
+    NECK_FEAT: "after"
+    CLS_LAYER: "circle"
+    POOL_LAYER: "avgpool"
+
+  STUDENT_WEIGHTS: "logs/dukemtmc/R34-kd/model_final.pth"
+  TEACHER_WEIGHTS: "/home/liaoxingyu2/lxy/cvpalgo-fast-reid/logs/dukemtmc/sbs_R50-ibn/model_final.pth"
+
+DATASETS:
+  NAMES: ("DukeMTMC",)
+  TESTS: ("DukeMTMC",)
+
+DATALOADER:
+  NUM_WORKERS: 8
+
+OUTPUT_DIR: "logs/dukemtmc/R50-R50_ibn"
