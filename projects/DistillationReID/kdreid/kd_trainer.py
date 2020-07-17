@@ -66,18 +66,18 @@ class KDTrainer(DefaultTrainer):
 
         data_time = time.perf_counter() - start
 
-        outputs = self.model(data)
+        outputs, targets = self.model(data)
 
         # Compute reid loss
         if isinstance(self.model, DistributedDataParallel):
-            loss_dict = self.model.module.losses(outputs)
+            loss_dict = self.model.module.losses(outputs, targets)
         else:
-            loss_dict = self.model.losses(outputs)
+            loss_dict = self.model.losses(outputs, targets)
 
         with torch.no_grad():
-            outputs_t = self.model_t(data)
+            outputs_t, _ = self.model_t(data)
 
-        loss_dict['loss_hint'] = self.distill_loss(outputs[0], outputs_t[0].detach())
+        loss_dict['loss_kl'] = self.distill_loss(outputs[1], outputs_t[1].detach())
         # loss_dict['loss_pkt'] = 1e4 * self.pkt_loss(outputs[1], outputs_t[1].detach())
 
         losses = sum(loss for loss in loss_dict.values())
