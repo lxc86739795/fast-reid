@@ -76,7 +76,8 @@ class CUHK03(ImageDataset):
         tmp_train = []
         for img_path, pid, camid in train:
             new_pid = self.dataset_name + "_" + str(pid)
-            tmp_train.append((img_path, new_pid, camid))
+            new_camid = self.dataset_name + "_" + str(camid)
+            tmp_train.append((img_path, new_pid, new_camid))
         train = tmp_train
         del tmp_train
         query = split['query']
@@ -99,7 +100,7 @@ class CUHK03(ImageDataset):
 
         import h5py
         from imageio import imwrite
-        from scipy.io import loadmat
+        from scipy import io
 
         PathManager.mkdirs(self.imgs_detected_dir)
         PathManager.mkdirs(self.imgs_labeled_dir)
@@ -235,7 +236,7 @@ class CUHK03(ImageDataset):
 
         print('Creating new split for detected images (767/700) ...')
         train_info, query_info, gallery_info = _extract_new_split(
-            loadmat(self.split_new_det_mat_path),
+            io.loadmat(self.split_new_det_mat_path),
             self.imgs_detected_dir
         )
         split = [{
@@ -255,7 +256,7 @@ class CUHK03(ImageDataset):
 
         print('Creating new split for labeled images (767/700) ...')
         train_info, query_info, gallery_info = _extract_new_split(
-            loadmat(self.split_new_lab_mat_path),
+            io.loadmat(self.split_new_lab_mat_path),
             self.imgs_labeled_dir
         )
         split = [{

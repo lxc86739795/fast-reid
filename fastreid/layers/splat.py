@@ -1,4 +1,9 @@
 # encoding: utf-8
+"""
+@author:  xingyu liao
+@contact: sherlockliao01@gmail.com
+"""
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -14,7 +19,7 @@ class SplAtConv2d(nn.Module):
     def __init__(self, in_channels, channels, kernel_size, stride=(1, 1), padding=(0, 0),
                  dilation=(1, 1), groups=1, bias=True,
                  radix=2, reduction_factor=4,
-                 rectify=False, rectify_avg=False, norm_layer=None, num_splits=1,
+                 rectify=False, rectify_avg=False, norm_layer=None,
                  dropblock_prob=0.0, **kwargs):
         super(SplAtConv2d, self).__init__()
         padding = _pair(padding)
@@ -34,13 +39,14 @@ class SplAtConv2d(nn.Module):
                                groups=groups * radix, bias=bias, **kwargs)
         self.use_bn = norm_layer is not None
         if self.use_bn:
-            self.bn0 = get_norm(norm_layer, channels * radix, num_splits)
+            self.bn0 = get_norm(norm_layer, channels * radix)
         self.relu = ReLU(inplace=True)
         self.fc1 = Conv2d(channels, inter_channels, 1, groups=self.cardinality)
         if self.use_bn:
-            self.bn1 = get_norm(norm_layer, inter_channels, num_splits)
+            self.bn1 = get_norm(norm_layer, inter_channels)
         self.fc2 = Conv2d(inter_channels, channels * radix, 1, groups=self.cardinality)
-
+        if dropblock_prob > 0.0:
+            self.dropblock = DropBlock2D(dropblock_prob, 3)
         self.rsoftmax = rSoftMax(radix, groups)
 
     def forward(self, x):
@@ -53,7 +59,10 @@ class SplAtConv2d(nn.Module):
 
         batch, rchannel = x.shape[:2]
         if self.radix > 1:
-            splited = torch.split(x, rchannel // self.radix, dim=1)
+            if torch.__version__ < '1.5':
+                splited = torch.split(x, int(rchannel // self.radix), dim=1)
+            else:
+                splited = torch.split(x, rchannel // self.radix, dim=1)
             gap = sum(splited)
         else:
             gap = x
@@ -68,7 +77,10 @@ class SplAtConv2d(nn.Module):
         atten = self.rsoftmax(atten).view(batch, -1, 1, 1)
 
         if self.radix > 1:
-            attens = torch.split(atten, rchannel // self.radix, dim=1)
+            if torch.__version__ < '1.5':
+                attens = torch.split(atten, int(rchannel // self.radix), dim=1)
+            else:
+                attens = torch.split(atten, rchannel // self.radix, dim=1)
             out = sum([att * split for (att, split) in zip(attens, splited)])
         else:
             out = atten * x
@@ -90,3 +102,8 @@ class rSoftMax(nn.Module):
         else:
             x = torch.sigmoid(x)
         return x
+
+
+class DropBlock2D(object):
+    def __init__(self, *args, **kwargs):
+        raise NotImplementedError

@@ -5,34 +5,51 @@
 """
 
 import os
+
 import torch
 from torch._six import container_abcs, string_classes, int_classes
 from torch.utils.data import DataLoader
-from fastreid.utils import comm
 
+from fastreid.utils import comm
 from . import samplers
 from .common import CommDataset
 from .datasets import DATASET_REGISTRY
 from .transforms import build_transforms
 
+__all__ = [
+    "build_reid_train_loader",
+    "build_reid_test_loader"
+]
+
 _root = os.getenv("FASTREID_DATASETS", "datasets")
 
 
-def build_reid_train_loader(cfg):
+def build_reid_train_loader(cfg, mapper=None, **kwargs):
+    """
+    Build reid train loader
+
+    Args:
+        cfg : image file path
+        mapper : one of the supported image modes in PIL, or "BGR"
+
+    Returns:
+        torch.utils.data.DataLoader: a dataloader.
+    """
     cfg = cfg.clone()
-    cfg.defrost()
 
     train_items = list()
     for d in cfg.DATASETS.NAMES:
-        dataset = DATASET_REGISTRY.get(d)(root=_root, combineall=cfg.DATASETS.COMBINEALL)
+        dataset = DATASET_REGISTRY.get(d)(root=_root, combineall=cfg.DATASETS.COMBINEALL, **kwargs)
         if comm.is_main_process():
             dataset.show_train()
         train_items.extend(dataset.train)
 
-    iters_per_epoch = len(train_items) // cfg.SOLVER.IMS_PER_BATCH
-    cfg.SOLVER.MAX_ITER *= iters_per_epoch
-    train_transforms = build_transforms(cfg, is_train=True)
-    train_set = CommDataset(train_items, train_transforms, relabel=True)
+    if mapper is not None:
+        transforms = mapper
+    else:
+        transforms = build_transforms(cfg, is_train=True)
+
+    train_set = CommDataset(train_items, transforms, relabel=True)
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
     num_instance = cfg.DATALOADER.NUM_INSTANCE
@@ -40,11 +57,9 @@ def build_reid_train_loader(cfg):
 
     if cfg.DATALOADER.PK_SAMPLER:
         if cfg.DATALOADER.NAIVE_WAY:
-            data_sampler = samplers.NaiveIdentitySampler(train_set.img_items,
-                                                         cfg.SOLVER.IMS_PER_BATCH, num_instance)
+            data_sampler = samplers.NaiveIdentitySampler(train_set.img_items, mini_batch_size, num_instance)
         else:
-            data_sampler = samplers.BalancedIdentitySampler(train_set.img_items,
-                                                            cfg.SOLVER.IMS_PER_BATCH, num_instance)
+            data_sampler = samplers.BalancedIdentitySampler(train_set.img_items, mini_batch_size, num_instance)
     else:
         data_sampler = samplers.TrainingSampler(len(train_set))
     batch_sampler = torch.utils.data.sampler.BatchSampler(data_sampler, mini_batch_size, True)
@@ -54,21 +69,38 @@ def build_reid_train_loader(cfg):
         num_workers=num_workers,
         batch_sampler=batch_sampler,
         collate_fn=fast_batch_collator,
+        pin_memory=True,
     )
     return train_loader
 
 
-def build_reid_test_loader(cfg, dataset_name):
+def build_reid_test_loader(cfg, dataset_name, mapper=None, **kwargs):
+    """
+    Build reid test loader
+
+    Args:
+        cfg:
+        dataset_name:
+        mapper:
+        **kwargs:
+
+    Returns:
+
+    """
+
     cfg = cfg.clone()
-    cfg.defrost()
-    
-    dataset = DATASET_REGISTRY.get(dataset_name)(root=_root)
+
+    dataset = DATASET_REGISTRY.get(dataset_name)(root=_root, **kwargs)
     if comm.is_main_process():
         dataset.show_test()
     test_items = dataset.query + dataset.gallery
 
-    test_transforms = build_transforms(cfg, is_train=False)
-    test_set = CommDataset(test_items, test_transforms, relabel=False)
+    if mapper is not None:
+        transforms = mapper
+    else:
+        transforms = build_transforms(cfg, is_train=False)
+
+    test_set = CommDataset(test_items, transforms, relabel=False)
 
     mini_batch_size = cfg.TEST.IMS_PER_BATCH // comm.get_world_size()
     data_sampler = samplers.InferenceSampler(len(test_set))
@@ -76,8 +108,10 @@ def build_reid_test_loader(cfg, dataset_name):
     test_loader = DataLoader(
         test_set,
         batch_sampler=batch_sampler,
-        num_workers=0,  # save some memory
-        collate_fn=fast_batch_collator)
+        num_workers=4,  # save some memory
+        collate_fn=fast_batch_collator,
+        pin_memory=True,
+    )
     return test_loader, len(dataset.query)
 
 

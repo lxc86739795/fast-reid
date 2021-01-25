@@ -5,9 +5,9 @@
 """
 
 import torch
+import torch.nn.functional as F
 
 
-@torch.no_grad()
 def concat_all_gather(tensor):
     """
     Performs all_gather operation on the provided tensors.
@@ -36,16 +36,13 @@ def euclidean_dist(x, y):
     m, n = x.size(0), y.size(0)
     xx = torch.pow(x, 2).sum(1, keepdim=True).expand(m, n)
     yy = torch.pow(y, 2).sum(1, keepdim=True).expand(n, m).t()
-    dist = xx + yy
-    dist.addmm_(x, y.t(), beta=1, alpha=-2)
+    dist = xx + yy - 2 * torch.matmul(x, y.t())
     dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
     return dist
 
 
 def cosine_dist(x, y):
-    bs1, bs2 = x.size(0), y.size(0)
-    frac_up = torch.matmul(x, y.transpose(0, 1))
-    frac_down = (torch.sqrt(torch.sum(torch.pow(x, 2), 1))).view(bs1, 1).repeat(1, bs2) * \
-                (torch.sqrt(torch.sum(torch.pow(y, 2), 1))).view(1, bs2).repeat(bs1, 1)
-    cosine = frac_up / frac_down
-    return 1 - cosine
+    x = F.normalize(x, dim=1)
+    y = F.normalize(y, dim=1)
+    dist = 2 - 2 * torch.mm(x, y.t())
+    return dist

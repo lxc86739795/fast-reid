@@ -59,14 +59,14 @@ class Visualizer:
             cmc, sort_idx = self.get_matched_result(q_idx)
             query_info = self.dataset[q_idx]
             query_img = query_info['images']
-            cam_id = query_info['camid']
-            query_name = query_info['img_path'].split('/')[-1]
+            cam_id = query_info['camids']
+            query_name = query_info['img_paths'].split('/')[-1]
             all_imgs.append(query_img)
             query_img = np.rollaxis(np.asarray(query_img.numpy(), dtype=np.uint8), 0, 3)
             plt.clf()
             ax = fig.add_subplot(1, max_rank + 1, 1)
             ax.imshow(query_img)
-            ax.set_title('{}/{:.2f}/cam{}'.format(query_name, self.all_ap[q_idx], cam_id))
+            ax.set_title('{:.4f}/cam{}'.format(self.all_ap[q_idx], cam_id))
             ax.axis("off")
             for i in range(max_rank):
                 if vis_label:
@@ -76,7 +76,7 @@ class Visualizer:
                 g_idx = self.num_query + sort_idx[i]
                 gallery_info = self.dataset[g_idx]
                 gallery_img = gallery_info['images']
-                cam_id = gallery_info['camid']
+                cam_id = gallery_info['camids']
                 all_imgs.append(gallery_img)
                 gallery_img = np.rollaxis(np.asarray(gallery_img, dtype=np.uint8), 0, 3)
                 if cmc[i] == 1:
@@ -112,7 +112,7 @@ class Visualizer:
             #         axes.flat[i].imshow(acts[i], alpha=0.3, cmap='jet')
             if vis_label:
                 label_indice = np.where(cmc == 1)[0]
-                if label_sort == "ascending":   label_indice = label_indice[::-1]
+                if label_sort == "ascending": label_indice = label_indice[::-1]
                 label_indice = label_indice[:max_rank]
                 for i in range(max_rank):
                     if i >= len(label_indice): break
@@ -120,7 +120,7 @@ class Visualizer:
                     g_idx = self.num_query + sort_idx[j]
                     gallery_info = self.dataset[g_idx]
                     gallery_img = gallery_info['images']
-                    cam_id = gallery_info['camid']
+                    cam_id = gallery_info['camids']
                     gallery_img = np.rollaxis(np.asarray(gallery_img, dtype=np.uint8), 0, 3)
                     ax = fig.add_subplot(2, max_rank + 1, max_rank + 3 + i)
                     ax.add_patch(plt.Rectangle(xy=(0, 0), width=gallery_img.shape[1] - 1,
@@ -176,9 +176,9 @@ class Visualizer:
         self.plot_roc_curve(fpr, tpr)
         filepath = os.path.join(output, "roc.jpg")
         plt.savefig(filepath)
-        self.plot_distribution(pos, neg)
-        filepath = os.path.join(output, "pos_neg_dist.jpg")
-        plt.savefig(filepath)
+        # self.plot_distribution(pos, neg)
+        # filepath = os.path.join(output, "pos_neg_dist.jpg")
+        # plt.savefig(filepath)
         return fpr, tpr, pos, neg
 
     @staticmethod

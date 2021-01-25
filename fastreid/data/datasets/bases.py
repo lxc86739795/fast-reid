@@ -7,6 +7,7 @@
 import copy
 import logging
 import os
+
 from tabulate import tabulate
 from termcolor import colored
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 class Dataset(object):
     """An abstract class representing a Dataset.
     This is the base class for ``ImageDataset`` and ``VideoDataset``.
+
     Args:
         train (list): contains tuples of (img_path(s), pid, camid).
         query (list): contains tuples of (img_path(s), pid, camid).
@@ -54,9 +56,6 @@ class Dataset(object):
             raise ValueError('Invalid mode. Got {}, but expected to be '
                              'one of [train | query | gallery]'.format(self.mode))
 
-        # if self.verbose:
-        #     self.show_summary()
-
     def __getitem__(self, index):
         raise NotImplementedError
 
@@ -78,9 +77,9 @@ class Dataset(object):
         """
         pids = set()
         cams = set()
-        for _, pid, camid in data:
-            pids.add(pid)
-            cams.add(camid)
+        for info in data:
+            pids.add(info[1])
+            cams.add(info[2])
         return len(pids), len(cams)
 
     def get_num_pids(self, data):
@@ -104,6 +103,7 @@ class Dataset(object):
                 if pid in self._junk_pids:
                     continue
                 pid = self.dataset_name + "_" + str(pid)
+                camid = self.dataset_name + "_" + str(camid)
                 combined.append((img_path, pid, camid))
 
         _combine_data(self.query)

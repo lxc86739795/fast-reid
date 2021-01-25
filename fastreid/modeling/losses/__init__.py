@@ -4,7 +4,9 @@
 @contact: sherlockliao01@gmail.com
 """
 
-from .cross_entroy_loss import CrossEntropyLoss
-from .focal_loss import FocalLoss
-from .triplet_loss import TripletLoss
-from .circle_loss import CircleLoss
+from .circle_loss import *
+from .cross_entroy_loss import cross_entropy_loss, log_accuracy
+from .focal_loss import focal_loss
+from .triplet_loss import triplet_loss
+
+__all__ = [k for k in globals().keys() if not k.startswith("_")]

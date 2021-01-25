@@ -70,16 +70,16 @@ class FeatureExtractionDemo(object):
                 if cnt >= buffer_size:
                     batch = batch_data.popleft()
                     predictions = self.predictor.get()
-                    yield predictions, batch["targets"].numpy(), batch["camid"].numpy()
+                    yield predictions, batch["targets"].numpy(), batch["camids"].numpy()
 
             while len(batch_data):
                 batch = batch_data.popleft()
                 predictions = self.predictor.get()
-                yield predictions, batch["targets"].numpy(), batch["camid"].numpy()
+                yield predictions, batch["targets"].numpy(), batch["camids"].numpy()
         else:
             for batch in data_loader:
                 predictions = self.predictor(batch["images"])
-                yield predictions, batch["targets"].numpy(), batch["camid"].numpy()
+                yield predictions, batch["targets"].numpy(), batch["camids"].numpy()
 
 
 class AsyncPredictor:
@@ -123,7 +123,7 @@ class AsyncPredictor:
         for gpuid in range(max(num_gpus, 1)):
             cfg = cfg.clone()
             cfg.defrost()
-            cfg.MODEL.DEVICE = "cuda: {}".format(gpuid) if num_gpus > 0 else "cpu"
+            cfg.MODEL.DEVICE = "cuda:{}".format(gpuid) if num_gpus > 0 else "cpu"
             self.procs.append(
                 AsyncPredictor._PredictWorker(cfg, self.task_queue, self.result_queue)
             )

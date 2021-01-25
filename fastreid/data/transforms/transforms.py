@@ -4,7 +4,7 @@
 @contact: sherlockliao01@gmail.com
 """
 
-__all__ = ['ToTensor', 'RandomErasing', 'RandomPatch', 'AugMix',]
+__all__ = ['ToTensor', 'RandomPatch', 'AugMix', ]
 
 import math
 import random
@@ -13,7 +13,7 @@ from collections import deque
 import numpy as np
 from PIL import Image
 
-from .functional import to_tensor, augmentations_reid
+from .functional import to_tensor, augmentations
 
 
 class ToTensor(object):
@@ -39,51 +39,6 @@ class ToTensor(object):
 
     def __repr__(self):
         return self.__class__.__name__ + '()'
-
-
-class RandomErasing(object):
-    """ Randomly selects a rectangle region in an image and erases its pixels.
-        'Random Erasing Data Augmentation' by Zhong et al.
-        See https://arxiv.org/pdf/1708.04896.pdf
-    Args:
-        probability: The probability that the Random Erasing operation will be performed.
-        sl: Minimum proportion of erased area against input image.
-        sh: Maximum proportion of erased area against input image.
-        r1: Minimum aspect ratio of erased area.
-        mean: Erasing value.
-    """
-
-    def __init__(self, probability=0.5, sl=0.02, sh=0.4, r1=0.3, mean=255 * (0.49735, 0.4822, 0.4465)):
-        self.probability = probability
-        self.mean = mean
-        self.sl = sl
-        self.sh = sh
-        self.r1 = r1
-
-    def __call__(self, img):
-        img = np.asarray(img, dtype=np.float32).copy()
-        if random.uniform(0, 1) > self.probability:
-            return img
-
-        for attempt in range(100):
-            area = img.shape[0] * img.shape[1]
-            target_area = random.uniform(self.sl, self.sh) * area
-            aspect_ratio = random.uniform(self.r1, 1 / self.r1)
-
-            h = int(round(math.sqrt(target_area * aspect_ratio)))
-            w = int(round(math.sqrt(target_area / aspect_ratio)))
-
-            if w < img.shape[1] and h < img.shape[0]:
-                x1 = random.randint(0, img.shape[0] - h)
-                y1 = random.randint(0, img.shape[1] - w)
-                if img.shape[2] == 3:
-                    img[x1:x1 + h, y1:y1 + w, 0] = self.mean[0]
-                    img[x1:x1 + h, y1:y1 + w, 1] = self.mean[1]
-                    img[x1:x1 + h, y1:y1 + w, 2] = self.mean[2]
-                else:
-                    img[x1:x1 + h, y1:y1 + w, 0] = self.mean[0]
-                return img
-        return img
 
 
 class RandomPatch(object):
@@ -167,38 +122,41 @@ class RandomPatch(object):
 class AugMix(object):
     """ Perform AugMix augmentation and compute mixture.
     Args:
+        prob: Probability of taking augmix
         aug_prob_coeff: Probability distribution coefficients.
         mixture_width: Number of augmentation chains to mix per augmented example.
         mixture_depth: Depth of augmentation chains. -1 denotes stochastic depth in [1, 3]'
-        severity: Severity of underlying augmentation operators (between 1 to 10).
+        aug_severity: Severity of underlying augmentation operators (between 1 to 10).
     """
 
-    def __init__(self, aug_prob_coeff=1, mixture_width=3, mixture_depth=-1, severity=1):
+    def __init__(self, prob=0.5, aug_prob_coeff=0.1, mixture_width=3, mixture_depth=1, aug_severity=1):
+        self.prob = prob
         self.aug_prob_coeff = aug_prob_coeff
         self.mixture_width = mixture_width
         self.mixture_depth = mixture_depth
-        self.severity = severity
-        self.aug_list = augmentations_reid
+        self.aug_severity = aug_severity
+        self.augmentations = augmentations
 
     def __call__(self, image):
         """Perform AugMix augmentations and compute mixture.
         Returns:
           mixed: Augmented and mixed image.
         """
+        if random.random() > self.prob:
+            return np.asarray(image)
+
         ws = np.float32(
             np.random.dirichlet([self.aug_prob_coeff] * self.mixture_width))
         m = np.float32(np.random.beta(self.aug_prob_coeff, self.aug_prob_coeff))
 
-        image = np.asarray(image, dtype=np.float32).copy()
-        mix = np.zeros_like(image)
-        h, w = image.shape[0], image.shape[1]
+        mix = np.zeros([image.size[1], image.size[0], 3])
         for i in range(self.mixture_width):
-            image_aug = Image.fromarray(image.copy().astype(np.uint8))
+            image_aug = image.copy()
             depth = self.mixture_depth if self.mixture_depth > 0 else np.random.randint(1, 4)
             for _ in range(depth):
-                op = np.random.choice(self.aug_list)
-                image_aug = op(image_aug, self.severity, (w, h))
-            mix += ws[i] * np.asarray(image_aug, dtype=np.float32)
+                op = np.random.choice(self.augmentations)
+                image_aug = op(image_aug, self.aug_severity)
+            mix += ws[i] * np.asarray(image_aug)
 
         mixed = (1 - m) * image + m * mix
-        return mixed
+        return mixed.astype(np.uint8)

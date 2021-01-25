@@ -5,57 +5,67 @@
 """
 
 import torch
-from torch import nn
 import torch.nn.functional as F
 
-from fastreid.utils import comm
-from .utils import concat_all_gather
+__all__ = ["pairwise_circleloss", "pairwise_cosface"]
 
 
-class CircleLoss(object):
-    def __init__(self, cfg):
-        self._scale = cfg.MODEL.LOSSES.CIRCLE.SCALE
+def pairwise_circleloss(
+        embedding: torch.Tensor,
+        targets: torch.Tensor,
+        margin: float,
+        gamma: float, ) -> torch.Tensor:
+    embedding = F.normalize(embedding, dim=1)
 
-        self._m = cfg.MODEL.LOSSES.CIRCLE.MARGIN
-        self._s = cfg.MODEL.LOSSES.CIRCLE.ALPHA
+    dist_mat = torch.matmul(embedding, embedding.t())
 
-    def __call__(self, embedding, targets):
-        embedding = nn.functional.normalize(embedding, dim=1)
+    N = dist_mat.size(0)
 
-        if comm.get_world_size() > 1:
-            all_embedding = concat_all_gather(embedding)
-            all_targets = concat_all_gather(targets)
-        else:
-            all_embedding = embedding
-            all_targets = targets
+    is_pos = targets.view(N, 1).expand(N, N).eq(targets.view(N, 1).expand(N, N).t()).float()
+    is_neg = targets.view(N, 1).expand(N, N).ne(targets.view(N, 1).expand(N, N).t()).float()
 
-        dist_mat = torch.matmul(embedding, all_embedding.t())
+    # Mask scores related to itself
+    is_pos = is_pos - torch.eye(N, N, device=is_pos.device)
 
-        N, M = dist_mat.size()
-        is_pos = targets.view(N, 1).expand(N, M).eq(all_targets.view(M, 1).expand(M, N).t()).float()
+    s_p = dist_mat * is_pos
+    s_n = dist_mat * is_neg
 
-        # Compute the mask which ignores the relevance score of the query to itself
-        if M > N:
-            identity_indx = torch.eye(N, N, device=is_pos.device)
-            remain_indx = torch.zeros(N, M - N, device=is_pos.device)
-            identity_indx = torch.cat((identity_indx, remain_indx), dim=1)
-            is_pos = is_pos - identity_indx
-        else:
-            is_pos = is_pos - torch.eye(N, N, device=is_pos.device)
+    alpha_p = torch.clamp_min(-s_p.detach() + 1 + margin, min=0.)
+    alpha_n = torch.clamp_min(s_n.detach() + margin, min=0.)
+    delta_p = 1 - margin
+    delta_n = margin
 
-        is_neg = targets.view(N, 1).expand(N, M).ne(all_targets.view(M, 1).expand(M, N).t())
+    logit_p = - gamma * alpha_p * (s_p - delta_p) + (-99999999.) * (1 - is_pos)
+    logit_n = gamma * alpha_n * (s_n - delta_n) + (-99999999.) * (1 - is_neg)
 
-        s_p = dist_mat * is_pos
-        s_n = dist_mat * is_neg
+    loss = F.softplus(torch.logsumexp(logit_p, dim=1) + torch.logsumexp(logit_n, dim=1)).mean()
 
-        alpha_p = torch.clamp_min(-s_p.detach() + 1 + self._m, min=0.)
-        alpha_n = torch.clamp_min(s_n.detach() + self._m, min=0.)
-        delta_p = 1 - self._m
-        delta_n = self._m
+    return loss
 
-        logit_p = - self._s * alpha_p * (s_p - delta_p)
-        logit_n = self._s * alpha_n * (s_n - delta_n)
 
-        loss = nn.functional.softplus(torch.logsumexp(logit_p, dim=1) + torch.logsumexp(logit_n, dim=1)).mean()
+def pairwise_cosface(
+        embedding: torch.Tensor,
+        targets: torch.Tensor,
+        margin: float,
+        gamma: float, ) -> torch.Tensor:
+    # Normalize embedding features
+    embedding = F.normalize(embedding, dim=1)
 
-        return loss * self._scale
+    dist_mat = torch.matmul(embedding, embedding.t())
+
+    N = dist_mat.size(0)
+    is_pos = targets.view(N, 1).expand(N, N).eq(targets.view(N, 1).expand(N, N).t()).float()
+    is_neg = targets.view(N, 1).expand(N, N).ne(targets.view(N, 1).expand(N, N).t()).float()
+
+    # Mask scores related to itself
+    is_pos = is_pos - torch.eye(N, N, device=is_pos.device)
+
+    s_p = dist_mat * is_pos
+    s_n = dist_mat * is_neg
+
+    logit_p = -gamma * s_p + (-99999999.) * (1 - is_pos)
+    logit_n = gamma * (s_n + margin) + (-99999999.) * (1 - is_neg)
+
+    loss = F.softplus(torch.logsumexp(logit_p, dim=1) + torch.logsumexp(logit_n, dim=1)).mean()
+
+    return loss

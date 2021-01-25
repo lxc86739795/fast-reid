@@ -14,6 +14,7 @@ from torch import nn
 
 from fastreid.layers import get_norm
 from fastreid.utils import comm
+from fastreid.utils.checkpoint import get_missing_parameters_message, get_unexpected_parameters_message
 from .build import BACKBONE_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,6 @@ class ConvLayer(nn.Module):
             out_channels,
             kernel_size,
             bn_norm,
-            num_splits,
             stride=1,
             padding=0,
             groups=1,
@@ -62,7 +62,7 @@ class ConvLayer(nn.Module):
         if IN:
             self.bn = nn.InstanceNorm2d(out_channels, affine=True)
         else:
-            self.bn = get_norm(bn_norm, out_channels, num_splits)
+            self.bn = get_norm(bn_norm, out_channels)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -75,7 +75,7 @@ class ConvLayer(nn.Module):
 class Conv1x1(nn.Module):
     """1x1 convolution + bn + relu."""
 
-    def __init__(self, in_channels, out_channels, bn_norm, num_splits, stride=1, groups=1):
+    def __init__(self, in_channels, out_channels, bn_norm, stride=1, groups=1):
         super(Conv1x1, self).__init__()
         self.conv = nn.Conv2d(
             in_channels,
@@ -86,7 +86,7 @@ class Conv1x1(nn.Module):
             bias=False,
             groups=groups
         )
-        self.bn = get_norm(bn_norm, out_channels, num_splits)
+        self.bn = get_norm(bn_norm, out_channels)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -99,12 +99,12 @@ class Conv1x1(nn.Module):
 class Conv1x1Linear(nn.Module):
     """1x1 convolution + bn (w/o non-linearity)."""
 
-    def __init__(self, in_channels, out_channels, bn_norm, num_splits, stride=1):
+    def __init__(self, in_channels, out_channels, bn_norm, stride=1):
         super(Conv1x1Linear, self).__init__()
         self.conv = nn.Conv2d(
             in_channels, out_channels, 1, stride=stride, padding=0, bias=False
         )
-        self.bn = get_norm(bn_norm, out_channels, num_splits)
+        self.bn = get_norm(bn_norm, out_channels)
 
     def forward(self, x):
         x = self.conv(x)
@@ -115,7 +115,7 @@ class Conv1x1Linear(nn.Module):
 class Conv3x3(nn.Module):
     """3x3 convolution + bn + relu."""
 
-    def __init__(self, in_channels, out_channels, bn_norm, num_splits, stride=1, groups=1):
+    def __init__(self, in_channels, out_channels, bn_norm, stride=1, groups=1):
         super(Conv3x3, self).__init__()
         self.conv = nn.Conv2d(
             in_channels,
@@ -126,7 +126,7 @@ class Conv3x3(nn.Module):
             bias=False,
             groups=groups
         )
-        self.bn = get_norm(bn_norm, out_channels, num_splits)
+        self.bn = get_norm(bn_norm, out_channels)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -141,7 +141,7 @@ class LightConv3x3(nn.Module):
     1x1 (linear) + dw 3x3 (nonlinear).
     """
 
-    def __init__(self, in_channels, out_channels, bn_norm, num_splits):
+    def __init__(self, in_channels, out_channels, bn_norm):
         super(LightConv3x3, self).__init__()
         self.conv1 = nn.Conv2d(
             in_channels, out_channels, 1, stride=1, padding=0, bias=False
@@ -155,7 +155,7 @@ class LightConv3x3(nn.Module):
             bias=False,
             groups=out_channels
         )
-        self.bn = get_norm(bn_norm, out_channels, num_splits)
+        self.bn = get_norm(bn_norm, out_channels)
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -235,35 +235,34 @@ class OSBlock(nn.Module):
             in_channels,
             out_channels,
             bn_norm,
-            num_splits,
             IN=False,
             bottleneck_reduction=4,
             **kwargs
     ):
         super(OSBlock, self).__init__()
         mid_channels = out_channels // bottleneck_reduction
-        self.conv1 = Conv1x1(in_channels, mid_channels, bn_norm, num_splits)
-        self.conv2a = LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits)
+        self.conv1 = Conv1x1(in_channels, mid_channels, bn_norm)
+        self.conv2a = LightConv3x3(mid_channels, mid_channels, bn_norm)
         self.conv2b = nn.Sequential(
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
         )
         self.conv2c = nn.Sequential(
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
         )
         self.conv2d = nn.Sequential(
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
-            LightConv3x3(mid_channels, mid_channels, bn_norm, num_splits),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
+            LightConv3x3(mid_channels, mid_channels, bn_norm),
         )
         self.gate = ChannelGate(mid_channels)
-        self.conv3 = Conv1x1Linear(mid_channels, out_channels, bn_norm, num_splits)
+        self.conv3 = Conv1x1Linear(mid_channels, out_channels, bn_norm)
         self.downsample = None
         if in_channels != out_channels:
-            self.downsample = Conv1x1Linear(in_channels, out_channels, bn_norm, num_splits)
+            self.downsample = Conv1x1Linear(in_channels, out_channels, bn_norm)
         self.IN = None
         if IN: self.IN = nn.InstanceNorm2d(out_channels, affine=True)
         self.relu = nn.ReLU(True)
@@ -303,7 +302,6 @@ class OSNet(nn.Module):
             layers,
             channels,
             bn_norm,
-            num_splits,
             IN=False,
             **kwargs
     ):
@@ -313,7 +311,7 @@ class OSNet(nn.Module):
         assert num_blocks == len(channels) - 1
 
         # convolutional backbone
-        self.conv1 = ConvLayer(3, channels[0], 7, bn_norm, num_splits, stride=2, padding=3, IN=IN)
+        self.conv1 = ConvLayer(3, channels[0], 7, bn_norm, stride=2, padding=3, IN=IN)
         self.maxpool = nn.MaxPool2d(3, stride=2, padding=1)
         self.conv2 = self._make_layer(
             blocks[0],
@@ -321,7 +319,6 @@ class OSNet(nn.Module):
             channels[0],
             channels[1],
             bn_norm,
-            num_splits,
             reduce_spatial_size=True,
             IN=IN
         )
@@ -331,7 +328,6 @@ class OSNet(nn.Module):
             channels[1],
             channels[2],
             bn_norm,
-            num_splits,
             reduce_spatial_size=True
         )
         self.conv4 = self._make_layer(
@@ -340,10 +336,9 @@ class OSNet(nn.Module):
             channels[2],
             channels[3],
             bn_norm,
-            num_splits,
             reduce_spatial_size=False
         )
-        self.conv5 = Conv1x1(channels[3], channels[3], bn_norm, num_splits)
+        self.conv5 = Conv1x1(channels[3], channels[3], bn_norm)
 
         self._init_params()
 
@@ -354,20 +349,19 @@ class OSNet(nn.Module):
             in_channels,
             out_channels,
             bn_norm,
-            num_splits,
             reduce_spatial_size,
             IN=False
     ):
         layers = []
 
-        layers.append(block(in_channels, out_channels, bn_norm, num_splits, IN=IN))
+        layers.append(block(in_channels, out_channels, bn_norm, IN=IN))
         for i in range(1, layer):
-            layers.append(block(out_channels, out_channels, bn_norm, num_splits, IN=IN))
+            layers.append(block(out_channels, out_channels, bn_norm, IN=IN))
 
         if reduce_spatial_size:
             layers.append(
                 nn.Sequential(
-                    Conv1x1(out_channels, out_channels, bn_norm, num_splits),
+                    Conv1x1(out_channels, out_channels, bn_norm),
                     nn.AvgPool2d(2, stride=2),
                 )
             )
@@ -470,25 +464,7 @@ def init_pretrained_weights(model, key=''):
             discarded_layers.append(k)
 
     model_dict.update(new_state_dict)
-    model.load_state_dict(model_dict)
-
-    if len(matched_layers) == 0:
-        warnings.warn(
-            'The pretrained weights from "{}" cannot be loaded, '
-            'please check the key names manually '
-            '(** ignored and continue **)'.format(cached_file)
-        )
-    else:
-        logger.info(
-            'Successfully loaded imagenet pretrained weights from "{}"'.
-                format(cached_file)
-        )
-        if len(discarded_layers) > 0:
-            logger.info(
-                '** The following layers are discarded '
-                'due to unmatched keys or layer size: {}'.
-                    format(discarded_layers)
-            )
+    return model_dict
 
 
 @BACKBONE_REGISTRY.register()
@@ -500,18 +476,21 @@ def build_osnet_backbone(cfg):
     """
 
     # fmt: off
-    pretrain = cfg.MODEL.BACKBONE.PRETRAIN
+    pretrain      = cfg.MODEL.BACKBONE.PRETRAIN
     pretrain_path = cfg.MODEL.BACKBONE.PRETRAIN_PATH
-    with_ibn = cfg.MODEL.BACKBONE.WITH_IBN
-    bn_norm = cfg.MODEL.BACKBONE.NORM
-    num_splits = cfg.MODEL.BACKBONE.NORM_SPLIT
-    depth = cfg.MODEL.BACKBONE.DEPTH
+    with_ibn      = cfg.MODEL.BACKBONE.WITH_IBN
+    bn_norm       = cfg.MODEL.BACKBONE.NORM
+    depth         = cfg.MODEL.BACKBONE.DEPTH
+    # fmt: on
 
     num_blocks_per_stage = [2, 2, 2]
-    num_channels_per_stage = {"x1_0": [64, 256, 384, 512], "x0_75": [48, 192, 288, 384], "x0_5": [32, 128, 192, 256],
-                              "x0_25": [16, 64, 96, 128]}[depth]
+    num_channels_per_stage = {
+        "x1_0": [64, 256, 384, 512],
+        "x0_75": [48, 192, 288, 384],
+        "x0_5": [32, 128, 192, 256],
+        "x0_25": [16, 64, 96, 128]}[depth]
     model = OSNet([OSBlock, OSBlock, OSBlock], num_blocks_per_stage, num_channels_per_stage,
-                  bn_norm, num_splits, IN=with_ibn)
+                  bn_norm, IN=with_ibn)
 
     if pretrain:
         # Load pretrain path if specifically
@@ -519,7 +498,6 @@ def build_osnet_backbone(cfg):
             try:
                 state_dict = torch.load(pretrain_path, map_location=torch.device('cpu'))
                 logger.info(f"Loading pretrained model from {pretrain_path}")
-                model.load_state_dict(state_dict)
             except FileNotFoundError as e:
                 logger.info(f'{pretrain_path} is not found! Please check this path.')
                 raise e
@@ -532,5 +510,15 @@ def build_osnet_backbone(cfg):
             else:
                 pretrain_key = "osnet_" + depth
 
-            init_pretrained_weights(model, pretrain_key)
+            state_dict = init_pretrained_weights(model, pretrain_key)
+
+        incompatible = model.load_state_dict(state_dict, strict=False)
+        if incompatible.missing_keys:
+            logger.info(
+                get_missing_parameters_message(incompatible.missing_keys)
+            )
+        if incompatible.unexpected_keys:
+            logger.info(
+                get_unexpected_parameters_message(incompatible.unexpected_keys)
+            )
     return model

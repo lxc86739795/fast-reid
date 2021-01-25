@@ -10,14 +10,14 @@ import time
 from collections import Counter
 
 import torch
+from apex.parallel import DistributedDataParallel
 from torch import nn
-from torch.nn.parallel import DistributedDataParallel
 
 from fastreid.evaluation.testing import flatten_results_dict
 from fastreid.solver import optim
 from fastreid.utils import comm
 from fastreid.utils.checkpoint import PeriodicCheckpointer as _PeriodicCheckpointer
-from fastreid.utils.events import EventStorage, EventWriter
+from fastreid.utils.events import EventStorage, EventWriter, get_event_storage
 from fastreid.utils.file_io import PathManager
 from fastreid.utils.precision_bn import update_bn_stats, get_bn_modules
 from fastreid.utils.timer import Timer
@@ -32,7 +32,7 @@ __all__ = [
     "AutogradProfiler",
     "EvalHook",
     "PreciseBN",
-    "FreezeLayer",
+    "LayerFreeze",
 ]
 
 """
@@ -45,13 +45,16 @@ class CallbackHook(HookBase):
     Create a hook using callback functions provided by the user.
     """
 
-    def __init__(self, *, before_train=None, after_train=None, before_step=None, after_step=None):
+    def __init__(self, *, before_train=None, after_train=None, before_epoch=None, after_epoch=None,
+                 before_step=None, after_step=None):
         """
         Each argument is a function that takes one argument: the trainer.
         """
         self._before_train = before_train
+        self._before_epoch = before_epoch
         self._before_step = before_step
         self._after_step = after_step
+        self._after_epoch = after_epoch
         self._after_train = after_train
 
     def before_train(self):
@@ -65,6 +68,14 @@ class CallbackHook(HookBase):
         # Therefore, delete them to avoid circular reference.
         del self._before_train, self._after_train
         del self._before_step, self._after_step
+
+    def before_epoch(self):
+        if self._before_epoch:
+            self._before_epoch(self.trainer)
+
+    def after_epoch(self):
+        if self._after_epoch:
+            self._after_epoch(self.trainer)
 
     def before_step(self):
         if self._before_step:
@@ -167,6 +178,10 @@ class PeriodicWriter(HookBase):
             for writer in self._writers:
                 writer.write()
 
+    def after_epoch(self):
+        for writer in self._writers:
+            writer.write()
+
     def after_train(self):
         for writer in self._writers:
             writer.close()
@@ -182,11 +197,19 @@ class PeriodicCheckpointer(_PeriodicCheckpointer, HookBase):
     """
 
     def before_train(self):
-        self.max_iter = self.trainer.max_iter
+        self.max_epoch = self.trainer.max_epoch
+        if len(self.trainer.cfg.DATASETS.TESTS) == 1:
+            self.metric_name = "metric"
+        else:
+            self.metric_name = self.trainer.cfg.DATASETS.TESTS[0] + "/metric"
 
-    def after_step(self):
+    def after_epoch(self):
         # No way to use **kwargs
-        self.step(self.trainer.iter)
+        storage = get_event_storage()
+        metric_dict = dict(
+            metric=storage.latest()[self.metric_name][0] if self.metric_name in storage.latest() else -1
+        )
+        self.step(self.trainer.epoch, **metric_dict)
 
 
 class LRScheduler(HookBase):
@@ -226,7 +249,16 @@ class LRScheduler(HookBase):
     def after_step(self):
         lr = self._optimizer.param_groups[self._best_param_group_id]["lr"]
         self.trainer.storage.put_scalar("lr", lr, smoothing_hint=False)
-        self._scheduler.step()
+
+        next_iter = self.trainer.iter + 1
+        if next_iter <= self.trainer.warmup_iters:
+            self._scheduler["warmup_sched"].step()
+
+    def after_epoch(self):
+        next_iter = self.trainer.iter + 1
+        next_epoch = self.trainer.epoch + 1
+        if next_iter > self.trainer.warmup_iters and next_epoch >= self.trainer.delay_epochs:
+            self._scheduler["lr_sched"].step()
 
 
 class AutogradProfiler(HookBase):
@@ -280,7 +312,7 @@ class AutogradProfiler(HookBase):
             self._profiler.export_chrome_trace(out_file)
         else:
             # Support non-posix filesystems
-            with tempfile.TemporaryDirectory(prefix="detectron2_profiler") as d:
+            with tempfile.TemporaryDirectory(prefix="fastreid_profiler") as d:
                 tmp_file = os.path.join(d, "tmp.json")
                 self._profiler.export_chrome_trace(tmp_file)
                 with open(tmp_file) as f:
@@ -331,10 +363,10 @@ class EvalHook(HookBase):
         # Remove extra memory cache of main process due to evaluation
         torch.cuda.empty_cache()
 
-    def after_step(self):
-        next_iter = self.trainer.iter + 1
-        is_final = next_iter == self.trainer.max_iter
-        if is_final or (self._period > 0 and next_iter % self._period == 0):
+    def after_epoch(self):
+        next_epoch = self.trainer.epoch + 1
+        is_final = next_epoch == self.trainer.max_epoch
+        if is_final or (self._period > 0 and next_epoch % self._period == 0):
             self._do_eval()
         # Evaluation may take different time among workers.
         # A barrier make them start the next iteration together.
@@ -381,9 +413,9 @@ class PreciseBN(HookBase):
 
         self._data_iter = None
 
-    def after_step(self):
-        next_iter = self.trainer.iter + 1
-        is_final = next_iter == self.trainer.max_iter
+    def after_epoch(self):
+        next_epoch = self.trainer.epoch + 1
+        is_final = next_epoch == self.trainer.max_epoch
         if is_final:
             self.update_stats()
 
@@ -414,53 +446,69 @@ class PreciseBN(HookBase):
             update_bn_stats(self._model, data_loader(), self._num_iter)
 
 
-class FreezeLayer(HookBase):
-    def __init__(self, model, optimizer, freeze_layers, freeze_iters):
+class LayerFreeze(HookBase):
+    def __init__(self, model, freeze_layers, freeze_iters, fc_freeze_iters):
         self._logger = logging.getLogger(__name__)
 
         if isinstance(model, DistributedDataParallel):
             model = model.module
         self.model = model
-        self.optimizer = optimizer
 
         self.freeze_layers = freeze_layers
         self.freeze_iters = freeze_iters
+        self.fc_freeze_iters = fc_freeze_iters
 
-        # Previous parameters freeze status
-        param_freeze = {}
-        for param_group in self.optimizer.param_groups:
-            param_name = param_group['name']
-            param_freeze[param_name] = param_group['freeze']
-        self.param_freeze = param_freeze
+        self.is_frozen = False
+        self.fc_frozen = False
 
     def before_step(self):
         # Freeze specific layers
-        if self.trainer.iter < self.freeze_iters:
+        if self.trainer.iter < self.freeze_iters and not self.is_frozen:
             self.freeze_specific_layer()
 
         # Recover original layers status
-        elif self.trainer.iter == self.freeze_iters:
+        if self.trainer.iter >= self.freeze_iters and self.is_frozen:
             self.open_all_layer()
+
+        if self.trainer.max_iter - self.trainer.iter <= self.fc_freeze_iters \
+                and not self.fc_frozen:
+            self.freeze_classifier()
+
+    def freeze_classifier(self):
+        for p in self.model.heads.classifier.parameters():
+            p.requires_grad_(False)
+
+        self.fc_frozen = True
+        self._logger.info("Freeze classifier training for "
+                          "last {} iterations".format(self.fc_freeze_iters))
 
     def freeze_specific_layer(self):
         for layer in self.freeze_layers:
             if not hasattr(self.model, layer):
                 self._logger.info(f'{layer} is not an attribute of the model, will skip this layer')
 
-        for param_group in self.optimizer.param_groups:
-            param_name = param_group['name']
-            if param_name.split('.')[0] in self.freeze_layers:
-                param_group['freeze'] = True
-
-        # Change BN in freeze layers to eval mode
         for name, module in self.model.named_children():
-            if name in self.freeze_layers: module.eval()
+            if name in self.freeze_layers:
+                # Change BN in freeze layers to eval mode
+                module.eval()
+                for p in module.parameters():
+                    p.requires_grad_(False)
+
+        self.is_frozen = True
+        freeze_layers = ", ".join(self.freeze_layers)
+        self._logger.info(f'Freeze layer group "{freeze_layers}" training for {self.freeze_iters:d} iterations')
 
     def open_all_layer(self):
-        self.model.train()
-        for param_group in self.optimizer.param_groups:
-            param_name = param_group['name']
-            param_group['freeze'] = self.param_freeze[param_name]
+        for name, module in self.model.named_children():
+            if name in self.freeze_layers:
+                module.train()
+                for p in module.parameters():
+                    p.requires_grad_(True)
+
+        self.is_frozen = False
+
+        freeze_layers = ", ".join(self.freeze_layers)
+        self._logger.info(f'Open layer group "{freeze_layers}" training')
 
 
 class SWA(HookBase):
